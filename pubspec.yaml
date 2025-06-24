@@ -37,6 +37,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   tflite_flutter: ^0.11.0
+  logger: ^2.6.0
   
 
 dev_dependencies:
