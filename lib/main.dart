@@ -37,11 +37,13 @@ class DetectPage extends StatefulWidget {
 class _DetectPageState extends State<DetectPage> {
   CameraController? _cameraController;
   int _selectedCameraIdx = 0;
-  Interpreter? _interpreter;
+  late final Interpreter _interpreter;
   int inputSize = 300;
   bool _isDetecting = false;
   List<Map<String, dynamic>> _results = [];
   Timer? _timer;
+  DateTime? _lastDetectionTime;
+  double _lastFps = 0.0;
 
   final List<String> cocoLabels = ["person"];
 
@@ -58,13 +60,13 @@ class _DetectPageState extends State<DetectPage> {
     logger.i("Initializing camera...");
     await _initCamera(_selectedCameraIdx);
     logger.i("Initialization complete. Starting periodic detection.");
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _runDetection());
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) => _runDetection());
   }
 
   Future<void> _loadModel() async {
-    _interpreter = await Interpreter.fromAsset('assets/ssd_mobilenet.tflite');
+    var options = InterpreterOptions()..threads = 2;
+    _interpreter = await Interpreter.fromAsset('assets/ssd_mobilenet.tflite', options: options);
     logger.i("TFLite model loaded successfully.");
-    setState(() {});
   }
 
   Future<void> _initCamera(int idx) async {
@@ -73,7 +75,7 @@ class _DetectPageState extends State<DetectPage> {
     logger.i("Setting up camera index $idx...");
     final controller = CameraController(
       cameras[idx],
-      ResolutionPreset.medium,
+      ResolutionPreset.low,
       enableAudio: false,
     );
     try {
@@ -93,7 +95,7 @@ class _DetectPageState extends State<DetectPage> {
     try {
       await _initCamera(newIdx);
       setState(() => _selectedCameraIdx = newIdx);
-      _timer = Timer.periodic(const Duration(seconds: 1), (_) => _runDetection());
+      _timer = Timer.periodic(const Duration(milliseconds: 100), (_) => _runDetection());
       logger.i("Switched to camera index $newIdx.");
     } catch (e) {
       logger.e("Failed to switch camera: $e");
@@ -101,32 +103,21 @@ class _DetectPageState extends State<DetectPage> {
   }
 
   Future<void> _runDetection() async {
-    logger.d("Running detection...");
-    if (_interpreter == null || _cameraController == null || _isDetecting) {
-      logger.w("Detection skipped: Interpreter or camera not ready.");
-      return;
-    }
-    if (!_cameraController!.value.isInitialized) {
-      logger.w("Camera not initialized.");
-      return;
-    }
+    if (_cameraController == null || _isDetecting) return;
+    if (!_cameraController!.value.isInitialized) return;
 
     _isDetecting = true;
     try {
       XFile file = await _cameraController!.takePicture();
-      logger.d("Image captured.");
       final bytes = await file.readAsBytes();
 
       final img.Image? image = img.decodeImage(bytes);
       if (image == null) {
-        logger.w("Image decoding failed.");
         _isDetecting = false;
         return;
       }
 
       final img.Image resized = img.copyResize(image, width: inputSize, height: inputSize);
-      logger.d("Image resized to $inputSize x $inputSize.");
-
       var input = imageToByteListUint8(resized, inputSize);
       var inputList = input.reshape([1, inputSize, inputSize, 3]);
 
@@ -142,20 +133,23 @@ class _DetectPageState extends State<DetectPage> {
         3: numDetections
       };
 
-      _interpreter!.runForMultipleInputs([inputList], outputs);
+      final startTime = DateTime.now();
+      _interpreter.runForMultipleInputs([inputList], outputs);
+      final endTime = DateTime.now();
+      final duration = endTime.difference(startTime).inMilliseconds;
+
+      _lastFps = duration > 0 ? 1000 / duration : 0.0;
 
       final boxes = outputs[0] as List;
       final classes = outputs[1] as List;
       final scores = outputs[2] as List;
       final count = ((outputs[3] as List)[0] as double).toInt();
-      logger.i("Model inference complete. Detections: $count");
 
       List<Map<String, dynamic>> detections = [];
       for (int i = 0; i < count; i++) {
         int cls = (classes[0][i] as double).toInt();
         double score = scores[0][i];
         var rect = boxes[0][i];
-        logger.d('Detection $i -> class: $cls, score: ${score.toStringAsFixed(2)}, rect: $rect');
 
         if (cls == 0 && score > 0.6) {
           detections.add({'score': score, 'rect': rect, 'class': cls});
@@ -173,7 +167,7 @@ class _DetectPageState extends State<DetectPage> {
     logger.i("Disposing camera and interpreter...");
     _cameraController?.dispose();
     _timer?.cancel();
-    _interpreter?.close();
+    _interpreter.close();
     super.dispose();
   }
 
@@ -184,6 +178,9 @@ class _DetectPageState extends State<DetectPage> {
         body: Center(child: CircularProgressIndicator()),
       );
     }
+
+    final previewSize = _cameraController!.value.previewSize!;
+    final screenSize = MediaQuery.of(context).size;
 
     return Scaffold(
       appBar: AppBar(
@@ -200,8 +197,8 @@ class _DetectPageState extends State<DetectPage> {
           CameraPreview(_cameraController!),
           BoundingBoxOverlay(
             results: _results,
-            previewSize: _cameraController!.value.previewSize!,
-            screenSize: MediaQuery.of(context).size,
+            previewSize: previewSize,
+            screenSize: screenSize,
             cocoLabels: cocoLabels,
           ),
           Positioned(
@@ -211,8 +208,8 @@ class _DetectPageState extends State<DetectPage> {
               padding: const EdgeInsets.all(8),
               color: Colors.black54,
               child: Text(
-                'Persons detected: ${_results.length}',
-                style: const TextStyle(color: Colors.white, fontSize: 20),
+                'Persons detected: ${_results.length} | FPS: ${_lastFps.toStringAsFixed(1)}',
+                style: const TextStyle(color: Colors.white, fontSize: 18),
               ),
             ),
           ),
@@ -252,6 +249,9 @@ class BoundingBoxOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    double scaleX = screenSize.width / previewSize.height;
+    double scaleY = screenSize.height / previewSize.width;
+
     List<Widget> boxes = [];
     for (var result in results) {
       var rect = result['rect'] as List;
