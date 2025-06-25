@@ -38,6 +38,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   tflite_flutter: ^0.11.0
   logger: ^2.6.0
+  mqtt_client: ^10.9.2
   
 
 dev_dependencies:

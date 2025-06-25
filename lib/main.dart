@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:aircviot/services/mqtt_service.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -44,6 +45,7 @@ class _DetectPageState extends State<DetectPage> {
   Timer? _timer;
   DateTime? _lastDetectionTime;
   double _lastFps = 0.0;
+  static int? _ultimoValorEnviado;
 
   final List<String> cocoLabels = ["person"];
 
@@ -59,6 +61,7 @@ class _DetectPageState extends State<DetectPage> {
     await _loadModel();
     logger.i("Initializing camera...");
     await _initCamera(_selectedCameraIdx);
+    await ServicoMQTT.conectar();
     logger.i("Initialization complete. Starting periodic detection.");
     _timer = Timer.periodic(const Duration(milliseconds: 100), (_) => _runDetection());
   }
@@ -155,6 +158,12 @@ class _DetectPageState extends State<DetectPage> {
           detections.add({'score': score, 'rect': rect, 'class': cls});
         }
       }
+      final totalPessoas = detections.length;
+      if (totalPessoas != _ultimoValorEnviado) {
+        ServicoMQTT.publicar(totalPessoas.toString());
+        _ultimoValorEnviado = totalPessoas;
+      }
+
       setState(() => _results = detections);
     } catch (e) {
       logger.e('Detection error: $e');
@@ -168,6 +177,9 @@ class _DetectPageState extends State<DetectPage> {
     _cameraController?.dispose();
     _timer?.cancel();
     _interpreter.close();
+
+    ServicoMQTT.desconectar();
+
     super.dispose();
   }
 
